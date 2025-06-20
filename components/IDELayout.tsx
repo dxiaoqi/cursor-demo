@@ -6,6 +6,7 @@ import FileTree from './FileTree'
 import EditorArea from './EditorArea'
 import AIPanel from './AIPanel'
 import TopBar from './TopBar'
+import Notifications from './Notifications'
 import useAppStore from '@/lib/store'
 import { cn } from '@/lib/utils'
 
@@ -68,6 +69,8 @@ export default function IDELayout() {
           )}
         </PanelGroup>
       </div>
+      
+      <Notifications />
     </div>
   )
 }

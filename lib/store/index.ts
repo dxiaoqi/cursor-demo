@@ -3,6 +3,7 @@ import { immer } from 'zustand/middleware/immer'
 import { devtools, persist } from 'zustand/middleware'
 import type { AppState, FileNode, EditorTab, Position, IndexingStatus, SearchResult, Notification } from '../types'
 import { generateId } from '../utils'
+import { fileService } from '../services/fileService'
 
 const useAppStore = create<AppState>()(
   devtools(
@@ -54,18 +55,76 @@ const useAppStore = create<AppState>()(
           }),
 
           createFile: async (path: string, content: string = '') => {
-            // TODO: 实现文件创建逻辑
-            console.log('Creating file:', path)
+            try {
+              await fileService.createFile(path, content)
+              // 刷新文件树
+              const tree = await fileService.getFileTree()
+              get().actions.setFileTree(tree)
+              get().actions.addNotification({
+                type: 'success',
+                title: 'File created',
+                message: `Created ${path}`,
+              })
+            } catch (error) {
+              get().actions.addNotification({
+                type: 'error',
+                title: 'Failed to create file',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              })
+            }
           },
 
           deleteFile: async (path: string) => {
-            // TODO: 实现文件删除逻辑
-            console.log('Deleting file:', path)
+            try {
+              await fileService.deleteFile(path)
+              // 关闭相关的标签页
+              const state = get()
+              const tabsToClose = state.tabs.filter(tab => tab.path.startsWith(path))
+              tabsToClose.forEach(tab => state.actions.closeTab(tab.id))
+              // 刷新文件树
+              const tree = await fileService.getFileTree()
+              state.actions.setFileTree(tree)
+              state.actions.addNotification({
+                type: 'success',
+                title: 'File deleted',
+                message: `Deleted ${path}`,
+              })
+            } catch (error) {
+              get().actions.addNotification({
+                type: 'error',
+                title: 'Failed to delete file',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              })
+            }
           },
 
           renameFile: async (oldPath: string, newPath: string) => {
-            // TODO: 实现文件重命名逻辑
-            console.log('Renaming file:', oldPath, 'to', newPath)
+            try {
+              await fileService.renameFile(oldPath, newPath)
+              // 更新相关的标签页
+              set((state) => {
+                state.tabs.forEach(tab => {
+                  if (tab.path === oldPath) {
+                    tab.path = newPath
+                    tab.title = newPath.split('/').pop() || 'untitled'
+                  }
+                })
+              })
+              // 刷新文件树
+              const tree = await fileService.getFileTree()
+              get().actions.setFileTree(tree)
+              get().actions.addNotification({
+                type: 'success',
+                title: 'File renamed',
+                message: `Renamed to ${newPath}`,
+              })
+            } catch (error) {
+              get().actions.addNotification({
+                type: 'error',
+                title: 'Failed to rename file',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              })
+            }
           },
 
           // 编辑器操作
@@ -79,30 +138,48 @@ const useAppStore = create<AppState>()(
               return
             }
 
-            // 创建新标签页
-            const fileName = path.split('/').pop() || 'untitled'
-            const language = getLanguageFromPath(path)
-            
-            const newTab: EditorTab = {
-              id: generateId(),
-              path,
-              title: fileName,
-              content: '', // TODO: 从文件系统读取内容
-              language,
-              isDirty: false,
-            }
+            try {
+              // 从文件系统读取内容
+              const content = await fileService.getFileContent(path)
+              
+              // 创建新标签页
+              const fileName = path.split('/').pop() || 'untitled'
+              const language = getLanguageFromPath(path)
+              
+              const newTab: EditorTab = {
+                id: generateId(),
+                path,
+                title: fileName,
+                content,
+                language,
+                isDirty: false,
+              }
 
-            set((state) => {
-              state.tabs.push(newTab)
-              state.activeTabId = newTab.id
-              state.selectedPath = path
-            })
+              set((state) => {
+                state.tabs.push(newTab)
+                state.activeTabId = newTab.id
+                state.selectedPath = path
+                state.editorContent.set(path, content)
+              })
+            } catch (error) {
+              state.actions.addNotification({
+                type: 'error',
+                title: 'Failed to open file',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              })
+            }
           },
 
           closeTab: (tabId: string) => set((state) => {
             const index = state.tabs.findIndex(tab => tab.id === tabId)
             if (index === -1) return
 
+            const tab = state.tabs[index]
+            // 清理相关状态
+            state.editorContent.delete(tab.path)
+            state.cursorPosition.delete(tab.path)
+            state.selections.delete(tab.path)
+            
             state.tabs.splice(index, 1)
             
             // 如果关闭的是当前标签，切换到其他标签
@@ -131,6 +208,23 @@ const useAppStore = create<AppState>()(
               tab.content = content
               tab.isDirty = true
               state.editorContent.set(tab.path, content)
+              
+              // 自动保存（可选）
+              const autoSave = async () => {
+                try {
+                  await fileService.updateFileContent(tab.path, content)
+                  set((state) => {
+                    const t = state.tabs.find(t => t.id === tabId)
+                    if (t) t.isDirty = false
+                  })
+                } catch (error) {
+                  console.error('Auto-save failed:', error)
+                }
+              }
+              
+              // 延迟自动保存
+              clearTimeout((window as any).autoSaveTimeout)
+              ;(window as any).autoSaveTimeout = setTimeout(autoSave, 1000)
             }
           }),
 
@@ -238,6 +332,15 @@ function getLanguageFromPath(path: string): string {
     rs: 'rust',
   }
   return languageMap[ext || ''] || 'plaintext'
+}
+
+// 初始化：加载文件树
+if (typeof window !== 'undefined') {
+  fileService.getFileTree().then(tree => {
+    useAppStore.getState().actions.setFileTree(tree)
+  }).catch(error => {
+    console.error('Failed to load file tree:', error)
+  })
 }
 
 export default useAppStore

@@ -1,8 +1,19 @@
 'use client'
 
 import { X } from 'lucide-react'
+import dynamic from 'next/dynamic'
 import useAppStore from '@/lib/store'
 import { cn } from '@/lib/utils'
+
+// 动态导入Monaco Editor以避免SSR问题
+const MonacoEditor = dynamic(() => import('./MonacoEditor'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center text-muted-foreground">
+      <p>Loading editor...</p>
+    </div>
+  ),
+})
 
 export default function EditorArea() {
   const { tabs, activeTabId, actions } = useAppStore()
@@ -17,6 +28,8 @@ export default function EditorArea() {
       </div>
     )
   }
+
+  const activeTab = tabs.find(tab => tab.id === activeTabId)
 
   return (
     <div className="flex h-full flex-col">
@@ -52,15 +65,8 @@ export default function EditorArea() {
       </div>
 
       {/* 编辑器内容区 */}
-      <div className="flex-1 bg-background p-4">
-        <div className="h-full rounded border border-border bg-secondary/20 p-4">
-          <p className="text-sm text-muted-foreground">
-            Monaco Editor will be integrated here
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Active file: {tabs.find(t => t.id === activeTabId)?.path}
-          </p>
-        </div>
+      <div className="flex-1 bg-background">
+        {activeTab && <MonacoEditor tab={activeTab} />}
       </div>
     </div>
   )
