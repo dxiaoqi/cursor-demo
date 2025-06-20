@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { devtools, persist } from 'zustand/middleware'
-import type { AppState, FileNode, EditorTab, Position, IndexingStatus, SearchResult, Notification } from '../types'
+import type { AppState, FileNode, EditorTab, Position, IndexingStatus, SearchResult, Notification, CodeContext } from '../types'
 import { generateId } from '../utils'
 import { fileService } from '../services/fileService'
+import { aiSearchService } from '../services/aiSearchService'
 
 const useAppStore = create<AppState>()(
   devtools(
@@ -40,6 +41,10 @@ const useAppStore = create<AppState>()(
           // 文件操作
           setFileTree: (tree: FileNode) => set((state) => {
             state.fileTree = tree
+            // 当文件树更新时，触发重新索引
+            if (tree) {
+              state.actions.indexCodebase()
+            }
           }),
 
           togglePath: (path: string) => set((state) => {
@@ -246,12 +251,111 @@ const useAppStore = create<AppState>()(
           }),
 
           triggerSearch: async (query: string) => {
-            // TODO: 实现搜索逻辑
-            console.log('Searching for:', query)
+            const state = get()
+            
+            // 设置AI状态
             set((state) => {
               state.aiStatus.isActive = true
               state.aiStatus.currentTask = 'Searching...'
             })
+            
+            try {
+              // 构建上下文
+              const activeTab = state.tabs.find(t => t.id === state.activeTabId)
+              let context: CodeContext | undefined
+              
+              if (activeTab) {
+                const position = state.cursorPosition.get(activeTab.path) || { lineNumber: 1, column: 1 }
+                const lines = activeTab.content.split('\n')
+                const currentLine = lines[position.lineNumber - 1] || ''
+                
+                context = {
+                  currentFile: activeTab.path,
+                  cursorPosition: position,
+                  currentLine,
+                  beforeText: lines.slice(0, position.lineNumber - 1).join('\n'),
+                  afterText: lines.slice(position.lineNumber).join('\n'),
+                  openFiles: state.tabs.map(t => t.path),
+                  recentFiles: state.tabs.slice(-5).map(t => t.path),
+                  language: activeTab.language,
+                }
+              }
+              
+              // 执行搜索
+              const results = await aiSearchService.search(query, context)
+              
+              // 更新结果
+              state.actions.setSearchResults(results)
+              
+              // 更新AI状态
+              set((state) => {
+                state.aiStatus.isActive = false
+                state.aiStatus.currentTask = undefined
+                state.aiStatus.lastActivity = Date.now()
+              })
+            } catch (error) {
+              console.error('Search failed:', error)
+              state.actions.addNotification({
+                type: 'error',
+                title: 'Search failed',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              })
+              
+              set((state) => {
+                state.aiStatus.isActive = false
+                state.aiStatus.currentTask = undefined
+              })
+            }
+          },
+
+          // 新增：索引代码库
+          indexCodebase: async () => {
+            const state = get()
+            if (!state.fileTree) return
+            
+            set((state) => {
+              state.indexingStatus.isIndexing = true
+              state.indexingStatus.progress = 0
+              state.indexingStatus.errors = []
+            })
+            
+            try {
+              await aiSearchService.indexWorkspace(
+                state.fileTree,
+                (progress, indexedFiles, totalFiles) => {
+                  set((state) => {
+                    state.indexingStatus.progress = progress
+                    state.indexingStatus.indexedFiles = indexedFiles
+                    state.indexingStatus.totalFiles = totalFiles
+                  })
+                }
+              )
+              
+              set((state) => {
+                state.indexingStatus.isIndexing = false
+                state.indexingStatus.progress = 100
+              })
+              
+              state.actions.addNotification({
+                type: 'success',
+                title: 'Indexing complete',
+                message: `Indexed ${state.indexingStatus.indexedFiles} files`,
+              })
+            } catch (error) {
+              set((state) => {
+                state.indexingStatus.isIndexing = false
+                state.indexingStatus.errors.push({
+                  file: 'general',
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                })
+              })
+              
+              state.actions.addNotification({
+                type: 'error',
+                title: 'Indexing failed',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              })
+            }
           },
 
           // UI操作

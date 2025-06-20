@@ -177,6 +177,7 @@ export interface AppState {
     setSearchResults: (results: SearchResult[]) => void
     toggleAIPanel: () => void
     triggerSearch: (query: string) => Promise<void>
+    indexCodebase: () => Promise<void>
     
     // UI操作
     toggleTheme: () => void
